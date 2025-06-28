@@ -1,70 +1,92 @@
 from __future__ import annotations
+from dotenv import load_dotenv
+from livekit import agents
 from livekit.agents import (
-    AutoSubscribe,
     JobContext,
     WorkerOptions,
     cli,
-    llm
+    llm,
+    function_tool,
+    Agent,
+    AgentSession,
+    RunContext
 )
-from livekit.agents.multimodal import MultimodalAgent
-from livekit.plugins import openai
-from dotenv import load_dotenv
+from livekit.plugins import openai, silero
 from api import AssistantFnc
 from prompts import WELCOME_MESSAGE, INSTRUCTIONS, LOOKUP_VIN_MESSAGE
-import os
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
+# Global assistant function context
+assistant_fnc = AssistantFnc()
+
+@function_tool
+async def lookup_car(context: RunContext, vin: str) -> str:
+    """Lookup a car by its VIN"""
+    logger.info(f"Looking up car with VIN: {vin}")
+    return await assistant_fnc.lookup_car(vin)
+
+@function_tool
+async def get_car_details(context: RunContext) -> str:
+    """Get the details of the current car"""
+    logger.info("Getting current car details")
+    return await assistant_fnc.get_car_details()
+
+@function_tool
+async def create_car(context: RunContext, vin: str, make: str, model: str, year: int) -> str:
+    """Create a new car entry"""
+    logger.info(f"Creating car: {make} {model} {year} with VIN: {vin}")
+    return await assistant_fnc.create_car(vin, make, model, year)
+
+class CarAssistant(Agent):
+    def __init__(self):
+        super().__init__(
+            instructions=INSTRUCTIONS,
+            tools=[lookup_car, get_car_details, create_car],
+            # Use OpenAI Realtime API
+            llm=openai.realtime.RealtimeModel(
+                model="gpt-4o-mini-realtime-preview",
+                voice="shimmer",
+                temperature=0.8
+            )
+        )
+
 async def entrypoint(ctx: JobContext):
-    await ctx.connect(auto_subscribe=AutoSubscribe.SUBSCRIBE_ALL)
-    await ctx.wait_for_participant()
+    logger.info("Agent entrypoint started")
     
-    model = openai.realtime.RealtimeModel(
-        instructions=INSTRUCTIONS,
-        voice="shimmer",
-        temperature=0.8,
-        modalities=["audio", "text"]
+    # Connect to the room
+    await ctx.connect()
+    logger.info("Connected to room")
+
+    # Create the agent
+    car_assistant = CarAssistant()
+    
+    logger.info("Creating AgentSession...")
+    
+    # Create AgentSession for Realtime API
+    session = AgentSession(
+        vad=silero.VAD.load()
     )
-    assistant_fnc = AssistantFnc()
-    assistant = MultimodalAgent(model=model, fnc_ctx=assistant_fnc)
-    assistant.start(ctx.room)
     
-    session = model.sessions[0]
-    session.conversation.item.create(
-        llm.ChatMessage(
-            role="assistant",
-            content=WELCOME_MESSAGE
-        )
+    logger.info("Starting session...")
+    
+    # Start the session with the agent and room
+    await session.start(
+        room=ctx.room,
+        agent=car_assistant
     )
-    session.response.create()
     
-    @session.on("user_speech_committed")
-    def on_user_speech_committed(msg: llm.ChatMessage):
-        if isinstance(msg.content, list):
-            msg.content = "\n".join("[image]" if isinstance(x, llm.ChatImage) else x for x in msg)
-            
-        if assistant_fnc.has_car():
-            handle_query(msg)
-        else:
-            find_profile(msg)
-        
-    def find_profile(msg: llm.ChatMessage):
-        session.conversation.item.create(
-            llm.ChatMessage(
-                role="system",
-                content=LOOKUP_VIN_MESSAGE(msg)
-            )
-        )
-        session.response.create()
-        
-    def handle_query(msg: llm.ChatMessage):
-        session.conversation.item.create(
-            llm.ChatMessage(
-                role="user",
-                content=msg.content
-            )
-        )
-        session.response.create()
+    logger.info("Session started, generating welcome message...")
     
+    # Generate initial greeting
+    await session.generate_reply(instructions=WELCOME_MESSAGE)
+    
+    logger.info("Agent is ready and connected!")
+
 if __name__ == "__main__":
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))

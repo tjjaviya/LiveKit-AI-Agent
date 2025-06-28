@@ -1,6 +1,4 @@
-livekit-agents
-livekit-plugins-openai
-livekit-plugins-silero
+livekit-agents[openai,silero]~=1.0
 python-dotenv
 livekit-api
 flask[async]
