@@ -11,7 +11,7 @@ from livekit.agents import (
     AgentSession,
     RunContext
 )
-from livekit.plugins import openai, silero
+from livekit.plugins import openai, silero, google
 from api import AssistantFnc
 from prompts import WELCOME_MESSAGE, INSTRUCTIONS, LOOKUP_VIN_MESSAGE
 import logging
@@ -48,11 +48,14 @@ class CarAssistant(Agent):
         super().__init__(
             instructions=INSTRUCTIONS,
             tools=[lookup_car, get_car_details, create_car],
-            # Use OpenAI Realtime API
-            llm=openai.realtime.RealtimeModel(
-                model="gpt-4o-mini-realtime-preview",
-                voice="shimmer",
+            # Use OpenAI LLM with Google TTS
+            llm=openai.LLM(
+                model="gpt-4o-mini",
                 temperature=0.8
+            ),
+            # Use Google TTS for speech synthesis
+            tts=google.TTS(
+                 voice_name="en-US-Chirp3-HD-AChernar"  # High-quality Chirp3 voice
             )
         )
 
@@ -68,9 +71,10 @@ async def entrypoint(ctx: JobContext):
     
     logger.info("Creating AgentSession...")
     
-    # Create AgentSession for Realtime API
+    # Create AgentSession with VAD and STT
     session = AgentSession(
-        vad=silero.VAD.load()
+        vad=silero.VAD.load(),
+        stt=openai.STT()  # Use OpenAI for speech-to-text
     )
     
     logger.info("Starting session...")
